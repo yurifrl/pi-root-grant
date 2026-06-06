@@ -1,5 +1,15 @@
 # pi-root-grant
 
+> **Fork notice.** This repository is a fork. The source was obtained from the
+> npm package [`pi-root-grant@0.1.1`](https://www.npmjs.com/package/pi-root-grant)
+> (tarball shasum `af0e2df16ef2cfbaa9b3b66c8f6db1f90ff0411c`), originally
+> authored by **Oliver Marcusson** (`me@faithless.se`) and published under the
+> MIT license. The upstream git repo referenced in `package.json`
+> (`github.com/OliverMarcusson/pi-root-grant`) currently returns HTTP 404, so
+> this fork was seeded from the published npm artifact rather than cloned from
+> git. See [`SECURITY_ANALYSIS.md`](./SECURITY_ANALYSIS.md) for an independent
+> security review.
+
 Pi package that adds an explicit, temporary root-access grant flow for agents.
 
 ## What it does
