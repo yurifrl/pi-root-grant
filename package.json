@@ -1,0 +1,50 @@
+{
+  "name": "pi-root-grant",
+  "version": "0.1.1",
+  "description": "Pi extension that lets agents request temporary sudo-backed root access with explicit user approval.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "sudo",
+    "root-access",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "author": "Oliver Marcusson",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OliverMarcusson/pi-root-grant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OliverMarcusson/pi-root-grant/issues"
+  },
+  "homepage": "https://github.com/OliverMarcusson/pi-root-grant#readme",
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/root-grant.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@types/node": "^24.3.0",
+    "typescript": "^5.7.3",
+    "typebox": "^1.1.24"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  }
+}
