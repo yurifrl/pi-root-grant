@@ -95,6 +95,16 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+// Strip ANSI escape sequences and control characters from agent-supplied text
+// before it is rendered in the TUI. Prevents terminal-escape injection and
+// prompt spoofing via a crafted `reason`/`duration` (see SECURITY_ANALYSIS F6).
+function sanitizeForDisplay(value: string, max = 500): string {
+	return value
+		.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+		.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+		.slice(0, max);
+}
+
 function isActive(grant: GrantState | null): grant is GrantState {
 	return !!grant && Date.now() < grant.expiresAt;
 }
@@ -320,13 +330,15 @@ function createRootReadOperations(password?: string) {
 		},
 		async readFile(path: string) {
 			await sudoCheckNotSymlink(path, password);
-			const result = await sudoSpawnBuffer(password, ["bash", "-lc", "cat -- \"$1\"", "bash", path]);
+			// `bash -c` (not `-lc`): no need for a root login shell sourcing
+			// /etc/profile & /root startup files just to cat a file (F8).
+			const result = await sudoSpawnBuffer(password, ["bash", "-c", "cat -- \"$1\"", "bash", path]);
 			if (result.code !== 0) throwSudoError("reading file", result);
 			return result.stdout;
 		},
 		async detectImageMimeType(path: string) {
 			await sudoCheckNotSymlink(path, password);
-			const result = await sudoSpawnBuffer(password, ["bash", "-lc", "head -c 4100 -- \"$1\"", "bash", path], 10_000);
+			const result = await sudoSpawnBuffer(password, ["bash", "-c", "head -c 4100 -- \"$1\"", "bash", path], 10_000);
 			if (result.code !== 0) throwSudoError("detecting file type", result);
 			return detectImageMimeType(result.stdout);
 		},
@@ -361,7 +373,7 @@ function createRootEditOperations(password?: string) {
 		readFile: readOps.readFile,
 		writeFile: writeOps.writeFile,
 		async access(path: string) {
-			const result = await sudoSpawnBuffer(password, ["bash", "-lc", "test -r \"$1\" && test -w \"$1\"", "bash", path], 5_000);
+			const result = await sudoSpawnBuffer(password, ["bash", "-c", "test -r \"$1\" && test -w \"$1\"", "bash", path], 5_000);
 			if (result.code !== 0) throwSudoError("checking read/write access", result);
 		},
 	};
@@ -374,7 +386,7 @@ function getReadToolOptions(cwd: string, operations?: ReturnType<typeof createRo
 	};
 }
 
-function createRootBashOperations(password?: string) {
+function createRootBashOperations(password?: string, registry?: Set<ReturnType<typeof spawn>>) {
 	return {
 		exec(command: string, cwd: string, options: { onData: (data: Buffer) => void; signal?: AbortSignal; timeout?: number; env?: NodeJS.ProcessEnv }) {
 			return new Promise<{ exitCode: number | null }>((resolve, reject) => {
@@ -383,6 +395,10 @@ function createRootBashOperations(password?: string) {
 					env: options.env,
 					stdio: ["pipe", "pipe", "pipe"],
 				});
+				// Register the live root process so revoke()/expiry can SIGKILL it.
+				// Without this, a long-running root command keeps executing past the
+				// grant window — `sudo -k` only clears the cached timestamp (F4).
+				registry?.add(child);
 				let timedOut = false;
 				const timeoutHandle = options.timeout && options.timeout > 0
 					? setTimeout(() => {
@@ -398,11 +414,13 @@ function createRootBashOperations(password?: string) {
 				child.on("error", (error) => {
 					if (timeoutHandle) clearTimeout(timeoutHandle);
 					options.signal?.removeEventListener("abort", onAbort);
+					registry?.delete(child);
 					reject(error);
 				});
 				child.on("close", (code) => {
 					if (timeoutHandle) clearTimeout(timeoutHandle);
 					options.signal?.removeEventListener("abort", onAbort);
+					registry?.delete(child);
 					if (options.signal?.aborted) reject(new Error("aborted"));
 					else if (timedOut) reject(new Error(`timeout:${options.timeout}`));
 					else resolve({ exitCode: code });
@@ -415,6 +433,20 @@ function createRootBashOperations(password?: string) {
 
 export default function rootGrant(pi: ExtensionAPI) {
 	let grant: GrantState | null = null;
+	// Tracks live root child processes spawned by the root bash tool so they can
+	// be force-killed the instant a grant is revoked or expires (F4).
+	const rootChildren = new Set<ReturnType<typeof spawn>>();
+
+	function killRootChildren() {
+		for (const child of rootChildren) {
+			try {
+				child.kill("SIGKILL");
+			} catch {
+				/* already exited */
+			}
+		}
+		rootChildren.clear();
+	}
 
 	function clearStatus(ctx?: { ui?: { setStatus?: (key: string, value?: string) => void } }) {
 		ctx?.ui?.setStatus?.(STATUS_KEY, undefined);
@@ -425,6 +457,7 @@ export default function rootGrant(pi: ExtensionAPI) {
 		if (grant?.timer) clearTimeout(grant.timer);
 		if (grant?.password) grant.password = "";
 		grant = null;
+		killRootChildren();
 		clearStatus(ctx);
 		if (hadGrant) void run(pi, "sudo", ["-k"], 5_000).catch(() => undefined);
 		ctx?.ui?.notify?.(reason, "info");
@@ -444,9 +477,11 @@ export default function rootGrant(pi: ExtensionAPI) {
 
 	async function enableRoot(durationText: string, reason: string, ctx: any): Promise<ToolResult> {
 		const durationMs = parseDuration(durationText);
-		if (!durationMs) return textResult(`Invalid duration: ${durationText}`, { granted: false, error: true }, true);
+		if (!durationMs) return textResult(`Invalid duration: ${sanitizeForDisplay(durationText, 64)}`, { granted: false, error: true }, true);
 
-		const capped = durationMs === MAX_DURATION_MS && parseDuration(durationText)! >= MAX_DURATION_MS;
+		reason = sanitizeForDisplay(reason);
+
+		const capped = durationMs >= MAX_DURATION_MS;
 		const displayDuration = formatDuration(durationMs);
 		const ok = await ctx.ui.confirm(
 			"Enable root access?",
@@ -554,7 +589,7 @@ export default function rootGrant(pi: ExtensionAPI) {
 			expireIfNeeded(ctx);
 			if (!isActive(grant)) return createBashToolDefinition(ctx.cwd).execute(toolCallId, params, signal, onUpdate, ctx);
 			updateStatus(ctx);
-			return createBashToolDefinition(ctx.cwd, { operations: createRootBashOperations(grant.password) }).execute(toolCallId, params, signal, onUpdate, ctx);
+			return createBashToolDefinition(ctx.cwd, { operations: createRootBashOperations(grant.password, rootChildren) }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 	});
 

@@ -263,3 +263,30 @@ text, supply-chain) are real and partly fixable.
 
 *Reviewed against the npm 0.1.1 tarball only; no dynamic testing was performed.
 Findings are based on static reading of `extensions/root-grant.ts`.*
+
+---
+
+## 5. Hardening applied in this fork
+
+This fork ships concrete fixes for the cheaper, lower-risk findings. They are
+surgical changes to the **live** code path (`createRoot*Operations`); the dead
+legacy helpers were left untouched.
+
+| Finding | Fix shipped (v0.1.2) |
+|---------|----------------------|
+| **F4** | Live root child processes are tracked in a `Set` and `SIGKILL`ed in `revoke()`, so a long-running root command is actually terminated on revoke/expiry instead of surviving the grant window. |
+| **F6** | New `sanitizeForDisplay()` strips ANSI escape sequences and control characters from the agent-supplied `reason`/`duration` before they are rendered in the confirm dialog and password prompt, closing the terminal-escape / prompt-spoofing vector. |
+| **F8** | Root file helpers (`cat`, `head`, read/write `test`) now use `bash -c` instead of `bash -lc`, so reading or writing a file no longer spins up a root **login** shell that sources `/etc/profile` and root startup files. |
+| **F10** | The confused `capped` computation was simplified to `durationMs >= MAX_DURATION_MS` (no redundant re-parse). |
+
+### Still open (by design / larger effort)
+
+- **F1 / F2** — structural; cannot be fixed without changing the feature
+  (per-command approval or an allow-list would defeat the purpose). Documented,
+  not patched.
+- **F3** — the symlink check remains a separate process from the operation;
+  a true fix needs `O_NOFOLLOW`-style atomic open and is left as follow-up.
+- **F5** — in-memory password residue is inherent to V8 strings; mitigated only
+  by short windows.
+- **F7 / F9** — supply-chain pinning and an append-only audit log are
+  recommended but not yet implemented here.
